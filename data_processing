@@ -1,0 +1,175 @@
+#import libraries
+import pandas as pd
+import json
+from pprint import pprint
+
+#  dumped from MongoDB - one JSON object per line
+#  skip first line, parse multiple objects
+test = []
+with open('synthea_export (2).json') as f:
+    for _ in range(1):
+        next(f)
+    for line in f:
+            test.append(json.loads(line))        
+
+#  first we create a dataframe where each tuple represents each json object
+#  indices must all be equivalent to original file so we can add to this initial df
+patient_data = []
+number_of_patients = []
+dob_now = None
+gender = None
+
+for row_index in range(len(test)):
+    if test[row_index]['event'][0]['type'] == 'Patient':
+        dob_now = test[row_index]['event'][0]['dateOfBirth']
+        gender = test[row_index]['event'][0]['gender']
+
+        patient_data.append({'patient_id': test[row_index]['event'][0]['patient_id'],
+            'dateOfBirth': dob_now, 
+            'gender': gender})
+    
+    if test[row_index]['_id']['time_ref'] is not None:
+        patient_data.append({'patient_id': test[row_index]['_id']['patient_id'],
+            'dateOfBirth': dob_now,
+            'year': test[row_index]['_id']['time_ref'],
+            'gender': gender})
+
+        number_of_patients.append(test[row_index]['_id']['patient_id'])
+
+patients = pd.DataFrame(data = patient_data)
+
+#  check all the kinds of observations besides blood pressure and death certificate, to collect the unique kinds that will serve as column headers
+y_observations = []
+
+for row_index in range(len(test)):
+    events = test[row_index]['event']
+    for event_index in range(len(events)):
+        if events[event_index]['type'] == "Observation" and events[event_index]['text'] not in ['Blood Pressure', 'Cause of Death [US Standard Certificate of Death]']:
+            y_observations.append(events[event_index]['text'])
+
+def unique(list1): 
+  
+    # intilize a null list 
+    unique_list = [] 
+      
+    # traverse for all elements 
+    for x in list1: 
+        # check if exists in unique_list or not 
+        if x not in unique_list: 
+            unique_list.append(x)
+    return unique_list
+
+all_names_of_observations = unique(y_observations)
+
+#  create empty lists to represent each column that will be added to the patient df
+encounters = []
+procedures = []
+conditions = []
+allergyIntolerances = []
+medications = []
+careplans = []
+immunizations = []
+blood_pressures = []
+death = []
+#  create a list of empty lists to represent the observation columns, fill column names later
+observation_fields = [[] for _ in range(len(all_names_of_observations))]
+
+for row_index in range(len(test)): #  check each row
+    #  we want every column filled for every row of data, so we fill with None by default
+    encounters.append(None)
+    procedures.append(None)
+    conditions.append(None)
+    allergyIntolerances.append(None)
+    medications.append(None)
+    careplans.append(None)
+    immunizations.append(None)
+    blood_pressures.append(None)
+    death.append(None)
+    #  create empty list that will take in list of data for each row
+    event_encounters = []
+    event_procedures = []
+    event_conditions = []
+    event_allergy_intolerances = []
+    event_medications = []
+    event_careplans = []
+    event_immunizations = []
+    event_blood_pressures = []
+    event_death = []
+    #  create a list of empty lists to represent each observation column
+    #  where each empty list contains all the obs data for a set of events in a single row
+    event_observation_fields =  [[] for _ in range(len(all_names_of_observations))]
+
+    events = test[row_index]['event']
+    for event_index in range(len(events)): #  check each event in each row
+        #  fill each column with appropriate value
+        if events[event_index]['type'] == 'Encounter':
+            event_encounters.append(events[event_index]['class'])
+        encounters[row_index] = event_encounters
+
+        if events[event_index]['type'] == 'Procedure':
+            event_procedures.append(events[event_index]['text'])
+        procedures[row_index] = event_procedures
+        
+        if events[event_index]['type'] == 'Condition':
+            event_conditions.append(events[event_index]['text'])
+        conditions[row_index] = event_conditions
+
+        if events[event_index]['type'] == 'AllergyIntolerance':
+            event_allergy_intolerances.append(events[event_index]['text'])
+        allergyIntolerances[row_index] = event_allergy_intolerances
+
+        if events[event_index]['type'] == 'MedicationRequest':
+            event_medications.append(events[event_index]['medication'])
+        medications[row_index] = event_medications
+
+        if events[event_index]['type'] == 'CarePlan':
+            event_careplans.append(events[event_index]['activity'])
+        careplans[row_index] = event_careplans
+
+        if events[event_index]['type'] == 'Immunization':
+            event_immunizations.append(events[event_index]['immunization'])
+        immunizations[row_index] = event_immunizations
+
+        if events[event_index]['type'] == 'Observation' and events[event_index]['text'] == 'Blood Pressure':
+            event_blood_pressures.append(events[event_index]['bloodPressure'])
+        blood_pressures[row_index] = event_blood_pressures
+
+        if events[event_index]['type'] == 'Observation' and events[event_index]['text'] is None:
+            event_death.append(events[event_index]['status'])
+        death[row_index] = event_death
+
+        if events[event_index]['type'] == 'Observation' and 'values' in events[event_index]:
+            index_now = all_names_of_observations.index(events[event_index]['text'])
+            event_observation_fields[index_now].append(events[event_index]['values'])
+    observation_fields.append(event_observation_fields)
+
+#  append lists to patients dataframe
+patients['Encounters'] = encounters
+patients['Conditions'] = conditions
+patients['Procedure'] = procedures
+patients['AllergyIntolerance'] = allergyIntolerances
+patients['Medications'] = medications
+patients['Careplans'] = careplans
+patients['Immunization'] = immunizations
+patients['Blood Pressure'] = blood_pressures
+patients['Death Certificate'] = death
+
+#  create observation dataframe
+observations = pd.DataFrame(data=observation_fields, columns = all_names_of_observations)
+#  remove completely null rows (not sure why these appear), and reset the index
+obs = (observations.dropna(axis=0, how="all")).reset_index(drop=True)
+#  add observations to patient dataframe
+complete = pd.concat([patients,obs], axis=1,sort=False)
+#  remove rows that only account for patient information and nothing else
+final = complete[pd.notnull(complete['year'])]
+#  rename one of the columns that is obscured
+final = final.rename(index=str, columns={'FEV1/â€‹FVC': 'FEV1/FVC'}) 
+
+#  we removed rows from input data that only hold patient data 
+#  check that the final dataframe has the appropriate number of rows (original input minus patient rows)
+num_rows = len(test)
+num_pt = len(unique(number_of_patients))
+if final.shape[0] != (num_rows - num_pt):
+    print("Error in matching indices, check code")
+
+final.to_csv("synthea_output_data.csv")
